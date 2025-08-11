@@ -30,7 +30,9 @@ RSS_SOURCES = [
 async def _fetch(session: aiohttp.ClientSession, url: str) -> str:
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
         resp.raise_for_status()
-        return await resp.text()
+        # Some feeds send xml with different encodings; force utf-8 fallback
+        text = await resp.text(errors="ignore")
+        return text
 
 
 def _parse_rss(xml_text: str, source_key: str, source_name: str) -> List[Dict[str, Any]]:

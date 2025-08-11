@@ -6,13 +6,14 @@ from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 from .database import init_db, get_db_session, fetch_industry_counts, fetch_recent_articles_by_industry, fetch_articles, get_meta
-from .scheduler import start_scheduler, run_curation_blocking
+from .scheduler import start_scheduler, run_curation_blocking, logger as sched_logger
 from .classifier import INDUSTRIES
 
-load_dotenv()
+# Load .env from project root even when running inside backend/
+load_dotenv(find_dotenv())
 
 app = FastAPI(title="AI News Curation Agent", version="1.0.0")
 
@@ -30,6 +31,9 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    sched_logger.setLevel(logging.INFO)
     start_scheduler()
 
 
