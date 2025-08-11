@@ -4,8 +4,6 @@ import os
 import json
 from typing import Dict, Any, Tuple, List
 
-from openai import OpenAI
-
 INDUSTRIES: List[str] = [
     "Building Materials Sector",
     "Media & Entertainment",
@@ -61,7 +59,6 @@ def _build_user_prompt(title: str, summary: str | None) -> str:
 
 def _parse_json_response(text: str) -> Tuple[str | None, float | None]:
     try:
-        # find first JSON object in the text
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -74,12 +71,82 @@ def _parse_json_response(text: str) -> Tuple[str | None, float | None]:
     return None, None
 
 
-def classify_article(title: str, summary: str | None) -> Dict[str, Any]:
+def _classify_with_openai(title: str, summary: str | None) -> Dict[str, Any]:
+    from openai import OpenAI  # lazy import
+
     api_key = os.getenv("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
     if not api_key:
-        # Fallback: simple keyword-based heuristic
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    client = OpenAI(api_key=api_key)
+    messages = [
+        {"role": "system", "content": _build_system_prompt()},
+        {"role": "user", "content": _build_user_prompt(title, summary)},
+    ]
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.2,
+        max_tokens=120,
+    )
+    content = resp.choices[0].message.content or ""
+    industry, confidence = _parse_json_response(content)
+    return {"industry": industry, "confidence": confidence}
+
+
+def _classify_with_gemini(title: str, summary: str | None) -> Dict[str, Any]:
+    import google.generativeai as genai  # lazy import
+
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GEMINI_API_KEY")
+    model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.5-pro")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY not set")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+    generation_config = {"temperature": 0.2, "response_mime_type": "application/json"}
+    prompt = _build_system_prompt() + "\n\n" + _build_user_prompt(title, summary)
+    resp = model.generate_content(prompt, generation_config=generation_config)
+
+    text = ""
+    if hasattr(resp, "text") and resp.text:
+        text = resp.text
+    elif getattr(resp, "candidates", None):
+        parts = []
+        for c in resp.candidates:
+            for p in getattr(c, "content", {}).get("parts", []) or []:
+                parts.append(getattr(p, "text", ""))
+        text = "\n".join([t for t in parts if t])
+
+    industry, confidence = _parse_json_response(text)
+    return {"industry": industry, "confidence": confidence}
+
+
+def classify_article(title: str, summary: str | None) -> Dict[str, Any]:
+    provider = (os.getenv("LLM_PROVIDER") or "openai").lower()
+
+    try:
+        if provider == "gemini":
+            result = _classify_with_gemini(title, summary)
+        else:
+            result = _classify_with_openai(title, summary)
+        industry = result.get("industry")
+        confidence = result.get("confidence")
+        if industry not in INDUSTRIES:
+            if industry:
+                norm = industry.strip().lower()
+                for i in INDUSTRIES:
+                    if i.lower() == norm:
+                        industry = i
+                        break
+        if industry not in INDUSTRIES:
+            industry = "Uncategorized"
+        if confidence is None:
+            confidence = 0.5
+        return {"industry": industry, "confidence": confidence}
+    except Exception:
+        # Fallback: simple keyword heuristic
         lower = (title + " " + (summary or "")).lower()
         chosen = None
         if any(k in lower for k in ["cement", "concrete"]):
@@ -96,36 +163,4 @@ def classify_article(title: str, summary: str | None) -> Dict[str, Any]:
             chosen = "NBFC"
         else:
             chosen = "Uncategorized"
-        return {"industry": chosen, "confidence": 0.5}
-
-    client = OpenAI(api_key=api_key)
-
-    messages = [
-        {"role": "system", "content": _build_system_prompt()},
-        {"role": "user", "content": _build_user_prompt(title, summary)},
-    ]
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=100,
-        )
-        content = resp.choices[0].message.content or ""
-        industry, confidence = _parse_json_response(content)
-        if industry not in INDUSTRIES:
-            # attempt fuzzy normalization
-            if industry:
-                norm = industry.strip().lower()
-                for i in INDUSTRIES:
-                    if i.lower() == norm:
-                        industry = i
-                        break
-            if industry not in INDUSTRIES:
-                industry = "Uncategorized"
-        if confidence is None:
-            confidence = 0.5
-        return {"industry": industry, "confidence": confidence}
-    except Exception:
-        return {"industry": "Uncategorized", "confidence": 0.0}
+        return {"industry": chosen, "confidence": 0.3}
