@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import os
+import ssl
+import logging
 from typing import List, Dict, Any
 from email.utils import parsedate_to_datetime
 
 import aiohttp
+import certifi
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger("news.scraper")
 
 RSS_SOURCES = [
     {
@@ -27,10 +33,19 @@ RSS_SOURCES = [
 ]
 
 
+def _build_connector() -> aiohttp.TCPConnector:
+    verify = (os.getenv("SSL_VERIFY", "true").lower() in {"1", "true", "yes"})
+    if verify:
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        return aiohttp.TCPConnector(ssl=ctx)
+    else:
+        logger.warning("SSL_VERIFY=false -> disabling SSL certificate verification for RSS fetches")
+        return aiohttp.TCPConnector(ssl=False)
+
+
 async def _fetch(session: aiohttp.ClientSession, url: str) -> str:
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
         resp.raise_for_status()
-        # Some feeds send xml with different encodings; force utf-8 fallback
         text = await resp.text(errors="ignore")
         return text
 
@@ -74,15 +89,18 @@ async def fetch_latest_articles(hours: int = 24) -> List[Dict[str, Any]]:
     headers = {
         "User-Agent": "ai-news-agent/1.0 (+https://example.com)"
     }
-    async with aiohttp.ClientSession(headers=headers) as session:
+    connector = _build_connector()
+    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
         texts = await asyncio.gather(*[_fetch(session, s["url"]) for s in RSS_SOURCES], return_exceptions=True)
         for src, txt in zip(RSS_SOURCES, texts):
             if isinstance(txt, Exception):
+                logger.error("Error fetching %s: %s", src["name"], txt)
                 continue
             try:
                 parsed = _parse_rss(txt, src["source"], src["name"])
                 filtered = [a for a in parsed if _within_last_hours(a.get("published_at"), hours)]
                 results.extend(filtered)
-            except Exception:
+            except Exception as e:
+                logger.exception("Failed parsing RSS for %s: %s", src["name"], e)
                 continue
     return results

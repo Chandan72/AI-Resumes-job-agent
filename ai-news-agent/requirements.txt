@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 pydantic==2.8.2
 pytz==2024.1
 google-generativeai==0.8.3
+certifi==2025.1.31
